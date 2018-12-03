@@ -1,0 +1,6 @@
+[workspace]
+members = [
+	"oof-common",
+	"oof-controller",
+	"oof-router",
+]
