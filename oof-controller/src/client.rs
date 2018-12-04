@@ -1,16 +1,18 @@
 use std::hash::{Hash, Hasher};
+use std::mem::size_of;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, Shutdown, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, Shutdown, TcpStream};
 
 use log::{debug, info, error};
 use bufstream::BufStream;
+use bytes::{IntoBuf, Buf};
+use ipnetwork::Ipv4Network;
 
 use crate::{Error, Result};
 use oof_common as common;
-use oof_common::{constants, MessageType};
+use oof_common::util::read_to_bytes;
 
 #[derive(Debug)]
 struct ClientInner {
@@ -33,9 +35,29 @@ impl ClientInner {
         self.stream.get_ref()
     }
     pub fn read_and_process(&mut self) -> Result<()> {
+        use oof_common::MessageType::*;
         match common::read_message_type(&mut self.stream) {
-            Ok(MessageType::Hello) => return Err(common::Error::HelloAlready.into()),
-            Ok(_) => {},
+            Ok(Hello) => return Err(common::Error::HelloAlready.into()),
+            Ok(LinkInfo) => {
+                let mut data = read_to_bytes(&mut self.stream, size_of::<u16>())?.into_buf();
+                let count = data.get_u16_be();
+                debug!("got {} links", count);
+                if count == 0 {
+                    return Ok(());
+                }
+
+                let list_size = count as usize * (size_of::<u32>() + size_of::<u8>());
+                let mut data = read_to_bytes(&mut self.stream, list_size)?.into_buf();
+
+                let mut links = Vec::new();
+                for _ in 0..count {
+                    let addr = Ipv4Addr::from(data.get_u32_be());
+                    let network = Ipv4Network::new(addr, data.get_u8())?;
+
+                    info!("{} has a link to {}", self.addr, network);
+                    links.push(network);
+                }
+            },
             Err(e) => return Err(e.into()),
         }
 

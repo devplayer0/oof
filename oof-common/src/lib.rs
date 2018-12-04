@@ -10,6 +10,18 @@ use bytes::{BufMut, BytesMut};
 use bufstream::BufStream;
 
 pub mod constants;
+pub mod util;
+
+#[macro_export]
+macro_rules! chk_disco {
+    ($r: expr) => {{
+        let r = $r;
+        if r == 0 {
+            return Err(Error::SocketClosed);
+        }
+        r
+    }}
+}
 
 quick_error! {
     #[derive(Debug)]
@@ -44,20 +56,11 @@ quick_error! {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-macro_rules! chk_disco {
-    ($r: expr) => {{
-        let r = $r;
-        if r == 0 {
-            return Err(Error::SocketClosed);
-        }
-        r
-    }}
-}
-
 enum_from_primitive! {
     #[derive(Debug, PartialEq)]
     pub enum MessageType {
         Hello = 0,
+        LinkInfo = 1,
     }
 }
 impl Display for MessageType {
@@ -65,12 +68,13 @@ impl Display for MessageType {
         use crate::MessageType::*;
         write!(f, "{}", match self {
             Hello => "HELLO",
+            LinkInfo => "LINK_INFO",
         })
     }
 }
 pub fn read_message_type(stream: &mut BufStream<TcpStream>) -> Result<MessageType> {
     let mut t = [0; 1];
-    chk_disco!(stream.get_ref().read(&mut t[..])?);
+    chk_disco!(stream.read(&mut t)?);
     let t = t[0];
 
     match MessageType::from_u8(t) {

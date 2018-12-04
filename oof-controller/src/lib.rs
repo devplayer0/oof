@@ -9,6 +9,7 @@ use std::os::unix::io::AsRawFd;
 use quick_error::quick_error;
 use log::{info, error};
 use nix::poll::{EventFlags, PollFd, poll};
+use ipnetwork::IpNetworkError;
 
 mod client;
 
@@ -28,6 +29,12 @@ quick_error! {
             from()
             display("os error: {}", err)
             description(err.description())
+            cause(err)
+        }
+        InvalidLink(err: IpNetworkError) {
+            from()
+            display("router provided invalid link: {}", err)
+            description("router provided invalid link")
             cause(err)
         }
         Common(err: common::Error) {
