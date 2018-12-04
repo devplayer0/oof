@@ -12,6 +12,7 @@ use nix::poll::{EventFlags, PollFd, poll};
 
 mod client;
 
+use oof_common as common;
 use crate::client::Client;
 
 quick_error! {
@@ -29,9 +30,14 @@ quick_error! {
             description(err.description())
             cause(err)
         }
+        Common(err: common::Error) {
+            from()
+            display("{}", err)
+            description(err.description())
+            cause(err)
+        }
     }
 }
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]

@@ -9,5 +9,7 @@ quick-error = "~1.2"
 log = "~0.4"
 evmap = "~4.0"
 nix = "~0.12"
+bufstream = "~0.1"
 simplelog = "~0.5"
 ctrlc = "~3.1"
+oof-common = { path = "../oof-common" }

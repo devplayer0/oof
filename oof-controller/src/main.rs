@@ -7,6 +7,7 @@ use std::process;
 use log::{info, error};
 use simplelog::{LevelFilter, TermLogger};
 
+use oof_common::constants;
 use oof_controller::Controller;
 
 fn run() -> Result <(), Box<dyn StdError>> {
@@ -29,7 +30,7 @@ fn run() -> Result <(), Box<dyn StdError>> {
         })?;
     }
 
-    let controller = Controller::bind("127.0.0.1:27999")?;
+    let controller = Controller::bind(format!("127.0.0.1:{}", constants::DEFAULT_PORT))?;
     {
         let &(ref lock, ref cvar) = &*stop;
         let _guard = cvar.wait_until(lock.lock().unwrap(), |stop| *stop).unwrap();
