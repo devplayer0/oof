@@ -5,3 +5,9 @@ authors = ["Jack O'Sullivan <jackos1998@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+quick-error = "~1.2"
+log = "~0.4"
+evmap = "~4.0"
+nix = "~0.12"
+simplelog = "~0.5"
+ctrlc = "~3.1"
