@@ -11,6 +11,7 @@ use bufstream::BufStream;
 
 pub mod constants;
 pub mod util;
+pub mod net;
 
 #[macro_export]
 macro_rules! chk_disco {

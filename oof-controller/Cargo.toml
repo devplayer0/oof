@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 quick-error = "~1.2"
 log = "~0.4"
-evmap = "~4.0"
+petgraph = "~0.4"
 nix = "~0.12"
 bufstream = "~0.1"
 bytes = "~0.4"

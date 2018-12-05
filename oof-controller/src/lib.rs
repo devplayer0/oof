@@ -11,6 +11,7 @@ use log::{info, error};
 use nix::poll::{EventFlags, PollFd, poll};
 use ipnetwork::IpNetworkError;
 
+mod routing;
 mod client;
 
 use oof_common as common;
@@ -98,3 +99,6 @@ impl Controller {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
