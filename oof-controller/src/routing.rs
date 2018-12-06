@@ -190,13 +190,7 @@ impl Network {
         }
     }
 
-    pub fn update_router_links(&mut self, mgmt_addr: SocketAddr, links: Vec<Link>) {
-        if !self.routers.contains_key(&mgmt_addr) {
-            let new = Router::new(self.network.add_node(Node::Router(mgmt_addr)));
-            self.routers.insert(mgmt_addr, new);
-        }
-        self.routers.get_mut(&mgmt_addr).unwrap().update_links(links);
-
+    fn update(&mut self) {
         for router in self.routers.values() {
             router.update_network(&mut self.networks, &mut self.network);
         }
@@ -204,6 +198,33 @@ impl Network {
         for (mgmt_addr, router) in &self.routers {
             let table = router.calculate_routes(&self.networks, &self.routers, &self.network);
             self.routes.insert(*mgmt_addr, table);
+        }
+    }
+    pub fn update_router_links(&mut self, mgmt_addr: SocketAddr, links: Vec<Link>) {
+        if !self.routers.contains_key(&mgmt_addr) {
+            let new = Router::new(self.network.add_node(Node::Router(mgmt_addr)));
+            self.routers.insert(mgmt_addr, new);
+        }
+        self.routers.get_mut(&mgmt_addr).unwrap().update_links(links);
+
+        self.update();
+    }
+    pub fn remove_router(&mut self, mgmt_addr: SocketAddr) {
+        if let Some(index) = self.routers.remove(&mgmt_addr) {
+            self.network.remove_node(index.node_index);
+
+            let mut to_remove = Vec::new();
+            for (net, index) in &self.networks {
+                if self.network.edges(*index).count() == 0 {
+                    self.network.remove_node(*index);
+                    to_remove.push(*net);
+                }
+            }
+            for net in to_remove {
+                self.networks.remove(&net);
+            }
+
+            self.update();
         }
     }
     pub fn routes(&self, mgmt_addr: SocketAddr) -> Option<&HashMap<Ipv4Network, Ipv4Addr>> {

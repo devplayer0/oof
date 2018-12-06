@@ -46,6 +46,7 @@ impl ClientInner {
 
     pub fn shutdown(&self) -> Result<()> {
         self.stream.get_ref().shutdown(Shutdown::Both)?;
+        self.network.write().unwrap().remove_router(self.addr);
         Ok(())
     }
 
@@ -184,15 +185,19 @@ impl Client {
                         Err(Error::Common(common::Error::SocketClosed)) => {
                             debug!("socket to {} closed", addr);
                             clients.write().unwrap().remove(&addr);
-                            break;
-                        },
-                        Err(e) => {
-                            error!("client {} error: {}", addr, e);
                             if let Err(e) = inner.shutdown() {
                                 error!("failed to close client {} socket: {}", addr, e);
                             }
 
+                            break;
+                        },
+                        Err(e) => {
+                            error!("client {} error: {}", addr, e);
                             clients.write().unwrap().remove(&addr);
+                            if let Err(e) = inner.shutdown() {
+                                error!("failed to close client {} socket: {}", addr, e);
+                            }
+
                             break;
                         },
                     }
