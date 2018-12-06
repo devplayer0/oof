@@ -30,7 +30,7 @@ fn run() -> Result <(), Box<dyn StdError>> {
         })?;
     }
 
-    let controller = Controller::bind(format!("127.0.0.1:{}", constants::DEFAULT_PORT))?;
+    let controller = Controller::bind(format!("192.168.123.1:{}", constants::DEFAULT_PORT))?;
     {
         let &(ref lock, ref cvar) = &*stop;
         let _guard = cvar.wait_until(lock.lock().unwrap(), |stop| *stop).unwrap();

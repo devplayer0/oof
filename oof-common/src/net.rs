@@ -28,6 +28,18 @@ impl LinkSpeed {
             HundredGigabit => 100000,
         }
     }
+    pub fn from_value(val: u32) -> Option<LinkSpeed> {
+        use self::LinkSpeed::*;
+        Some(match val {
+            10 => Slow,
+            100 => Fast,
+            1000 => Gigabit,
+            10000 => TenGigabit,
+            40000 => FortyGigabit,
+            100000 => HundredGigabit,
+            _ => return None,
+        })
+    }
 }
 impl Display for LinkSpeed {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::error::Error as StdError;
 use std::process;
 
-use log::{debug, info, error};
+use log::{info, error};
 use simplelog::{LevelFilter, TermLogger};
 
 use oof_common::constants;
-use oof_router::Router;
+use oof_router::raw::RawRouter;
 
 fn run() -> Result<(), Box<dyn StdError>> {
     info!("starting router");
@@ -31,7 +31,7 @@ fn run() -> Result<(), Box<dyn StdError>> {
     }
 
     let err = Arc::new(Mutex::new(None));
-    let router = Router::connect(format!("127.0.0.1:{}", constants::DEFAULT_PORT), {
+    let router = RawRouter::start(format!("192.168.123.1:{}", constants::DEFAULT_PORT), {
         let err = Arc::clone(&err);
         let stop = Arc::clone(&stop);
         move |e| {
@@ -52,9 +52,6 @@ fn run() -> Result<(), Box<dyn StdError>> {
             cvar.notify_one();
         }
     })?;
-    use oof_common::net::*;
-    router.update_links(vec![Link::new("10.0.0.1/24".parse().unwrap(), LinkSpeed::Gigabit)])?;
-    debug!("links updated");
     {
         let &(ref lock, ref cvar) = &*stop;
         let _guard = cvar.wait_until(lock.lock().unwrap(), |stop| *stop).unwrap();
