@@ -175,20 +175,6 @@ impl Router {
     }
 }
 
-pub trait RoutingTable {
-    fn find_route(&self, addr: Ipv4Addr) -> Option<(Ipv4Network, Ipv4Addr)>;
-}
-impl RoutingTable for HashMap<Ipv4Network, Ipv4Addr> {
-    fn find_route(&self, addr: Ipv4Addr) -> Option<(Ipv4Network, Ipv4Addr)> {
-        for (net, hop) in self {
-            if net.contains(addr) {
-                return Some((*net, *hop));
-            }
-        }
-        None
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Network {
     networks: HashMap<Ipv4Network, NodeIndex>,

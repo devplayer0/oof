@@ -34,7 +34,9 @@ quick_error! {
             cause(err)
         }
 
-        SocketClosed {}
+        SocketClosed {
+            description("connection was closed")
+        }
         InvalidType(t: u8) {
             description("invalid message type")
             display("invalid message type: {}", t)

@@ -1,4 +1,5 @@
 use std::fmt::{self, Display};
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use enum_primitive::*;
@@ -66,5 +67,20 @@ impl Link {
             network,
             speed,
         }
+    }
+}
+
+pub type Route = (Ipv4Network, Ipv4Addr);
+pub trait RoutingTable {
+    fn find_route(&self, addr: Ipv4Addr) -> Option<Route>;
+}
+impl RoutingTable for HashMap<Ipv4Network, Ipv4Addr> {
+    fn find_route(&self, addr: Ipv4Addr) -> Option<Route> {
+        for (net, hop) in self {
+            if net.contains(addr) {
+                return Some((*net, *hop));
+            }
+        }
+        None
     }
 }

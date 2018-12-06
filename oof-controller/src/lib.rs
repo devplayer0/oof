@@ -51,8 +51,8 @@ quick_error! {
             description("router provided invalid link speed")
         }
         ControllerOnly(t: MessageType) {
-            description("received server only message")
-            display("received server only message of type {}", t)
+            description("received controller only message")
+            display("received controller only message of type {}", t)
         }
     }
 }

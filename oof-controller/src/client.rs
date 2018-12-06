@@ -1,7 +1,7 @@
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLockWriteGuard, RwLock};
+use std::sync::{Arc, MutexGuard, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr, Shutdown, TcpStream};
@@ -18,8 +18,8 @@ use crate::{Error, Result};
 use oof_common as common;
 use oof_common::MessageType;
 use oof_common::util::read_to_bytes;
-use oof_common::net::{LinkSpeed, Link};
-use crate::routing::{RoutingTable, Network};
+use oof_common::net::{LinkSpeed, Link, RoutingTable};
+use crate::routing::Network;
 
 #[derive(Debug)]
 pub(crate) struct ClientInner {
@@ -44,30 +44,32 @@ impl ClientInner {
         Ok(())
     }
 
-    #[inline]
-    pub fn socket(&self) -> &TcpStream {
-        self.stream.get_ref()
-    }
     pub fn shutdown(&self) -> Result<()> {
-        self.socket().shutdown(Shutdown::Both)?;
+        self.stream.get_ref().shutdown(Shutdown::Both)?;
         Ok(())
     }
 
     fn send_invalidate_routes(&mut self) -> Result<()> {
         self.stream.write(&[ MessageType::InvalidateRoutes as u8 ])?;
+        self.stream.flush()?;
         Ok(())
     }
-    fn send_route(&mut self, net: Ipv4Network, hop: Ipv4Addr) -> Result<()> {
-        let mut data = BytesMut::with_capacity(size_of::<u8>() + size_of::<u32>() + size_of::<u8>() + size_of::<u32>());
+    fn send_route(&mut self, hop: Ipv4Addr) -> Result<()> {
+        let mut data = BytesMut::with_capacity(size_of::<u8>() + size_of::<u32>());
         data.put(MessageType::Route as u8);
-        data.put_u32_be(net.network().into());
-        data.put(net.prefix());
         data.put_u32_be(hop.into());
 
+        self.stream.write(&data.freeze())?;
+        self.stream.flush()?;
         Ok(())
     }
-    fn send_no_route(&mut self) -> Result<()> {
-        self.stream.write(&[ MessageType::NoRoute as u8 ])?;
+    fn send_no_route(&mut self, dst: Ipv4Addr) -> Result<()> {
+        let mut data = BytesMut::with_capacity(size_of::<u8>() + size_of::<u32>());
+        data.put(MessageType::NoRoute as u8);
+        data.put_u32_be(dst.into());
+
+        self.stream.write(&data.freeze())?;
+        self.stream.flush()?;
         Ok(())
     }
     pub fn read_and_process(&mut self) -> Result<()> {
@@ -118,8 +120,8 @@ impl ClientInner {
                     }
                 };
                 match route {
-                    Some((net, hop)) => self.send_route(net, hop)?,
-                    None => self.send_no_route()?
+                    Some((_, hop)) => self.send_route(hop)?,
+                    None => self.send_no_route(dst)?
                 }
             },
             Ok(t) => return Err(Error::ControllerOnly(t)),
@@ -134,7 +136,7 @@ impl ClientInner {
 pub(crate) struct Client {
     addr: SocketAddr,
     thread: JoinHandle<()>,
-    inner: Arc<RwLock<ClientInner>>,
+    inner: Arc<Mutex<ClientInner>>,
 }
 impl PartialEq for Client {
     fn eq(&self, other: &Client) -> bool {
@@ -151,13 +153,13 @@ impl Hash for Client {
 impl Client {
     pub fn new(socket: TcpStream, clients: &Arc<RwLock<HashMap<SocketAddr, Client>>>, network: &Arc<RwLock<Network>>) -> Client {
         let addr = socket.peer_addr().unwrap();
-        let inner = Arc::new(RwLock::new(ClientInner::new(socket.try_clone().unwrap(), clients, network)));
+        let inner = Arc::new(Mutex::new(ClientInner::new(socket.try_clone().unwrap(), clients, network)));
         let thread = {
             let inner = Arc::clone(&inner);
             let clients = Arc::clone(clients);
             thread::spawn(move || {
                 {
-                    let mut inner = inner.write().unwrap();
+                    let mut inner = inner.lock().unwrap();
                     match inner.start() {
                         Ok(i) => i,
                         Err(e) => {
@@ -176,7 +178,7 @@ impl Client {
                 loop {
                     let _ = poll(&mut [socket_poll], -1);
 
-                    let mut inner = inner.write().unwrap();
+                    let mut inner = inner.lock().unwrap();
                     match inner.read_and_process() {
                         Ok(()) => {},
                         Err(Error::Common(common::Error::SocketClosed)) => {
@@ -186,7 +188,7 @@ impl Client {
                         },
                         Err(e) => {
                             error!("client {} error: {}", addr, e);
-                            if let Err(e) = inner.socket().shutdown(Shutdown::Both) {
+                            if let Err(e) = inner.shutdown() {
                                 error!("failed to close client {} socket: {}", addr, e);
                             }
 
@@ -205,11 +207,11 @@ impl Client {
         }
     }
 
-    pub fn inner_mut(&self) -> RwLockWriteGuard<ClientInner> {
-        self.inner.write().unwrap()
+    pub fn inner_mut(&self) -> MutexGuard<ClientInner> {
+        self.inner.lock().unwrap()
     }
     pub fn shutdown(self) {
-        self.inner.write().unwrap().shutdown().expect("failed to close socket");
+        self.inner.lock().unwrap().shutdown().expect("failed to close socket");
         self.thread.join().expect("client thread panicked");
     }
 }

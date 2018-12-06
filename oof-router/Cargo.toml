@@ -5,3 +5,12 @@ authors = ["Jack O'Sullivan <jackos1998@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+quick-error = "~1.2"
+log = "~0.4"
+nix = "~0.12"
+bytes = "~0.4"
+ipnetwork = "~0.13"
+bufstream = "~0.1"
+simplelog = "~0.5"
+ctrlc = "~3.1"
+oof-common = { path = "../oof-common" }
