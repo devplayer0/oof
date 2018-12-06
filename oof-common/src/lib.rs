@@ -62,6 +62,10 @@ enum_from_primitive! {
     pub enum MessageType {
         Hello = 0,
         LinkInfo = 1,
+        RouteRequest = 2,
+        Route = 3,
+        NoRoute = 4,
+        InvalidateRoutes = 5,
     }
 }
 impl Display for MessageType {
@@ -70,6 +74,10 @@ impl Display for MessageType {
         write!(f, "{}", match self {
             Hello => "HELLO",
             LinkInfo => "LINK_INFO",
+            RouteRequest => "ROUTE_REQUEST",
+            Route => "ROUTE",
+            NoRoute => "NO_ROUTE",
+            InvalidateRoutes => "INVALIDATE_ROUTES",
         })
     }
 }

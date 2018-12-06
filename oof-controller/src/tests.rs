@@ -16,7 +16,7 @@ macro_rules! links {
 
 fn test_network() -> Network {
     let mut network = Network::new();
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1234"),
         links!(
             "10.10.0.1/16", TenGigabit,
@@ -25,14 +25,14 @@ fn test_network() -> Network {
             "10.123.123.1/24", Slow
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1235"),
         links!(
             "10.10.0.2/16", TenGigabit,
             "10.0.0.1/24", Gigabit
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1236"),
         links!(
             "10.1.0.2/24", Gigabit,
@@ -40,7 +40,7 @@ fn test_network() -> Network {
             "10.60.0.1/30", TenGigabit
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1237"),
         links!(
             "172.16.0.2/24", TenGigabit,
@@ -49,27 +49,27 @@ fn test_network() -> Network {
             "10.40.0.1/24", Gigabit
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1238"),
         links!(
             "10.40.0.2/24", Gigabit
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1239"),
         links!(
             "10.2.0.2/24", Gigabit,
             "172.24.0.1/24", Fast
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1240"),
         links!(
             "172.24.0.2/24", Fast,
             "10.123.123.2/24", Fast
         )
     );
-    network.add_router(
+    network.update_router_links(
         addr!("127.0.0.1:1241"),
         links!(
             "10.10.0.3/16", Gigabit
@@ -86,7 +86,7 @@ fn routing_graph() {
 #[test]
 fn routing_table() {
     let net = test_network();
-    for (net, next_hop) in net.routes(addr!("127.0.0.1:1234")).unwrap().iter() {
+    for (net, next_hop) in net.routes(addr!("127.0.0.1:1234")).expect("failed to get routing table").iter() {
         println!("{} via {}", net, next_hop);
     }
 }

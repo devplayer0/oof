@@ -5,6 +5,7 @@ authors = ["Jack O'Sullivan <jackos1998@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+enum_primitive = "~0.1"
 quick-error = "~1.2"
 log = "~0.4"
 priority-queue = "~0.5"

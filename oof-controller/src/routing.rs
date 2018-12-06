@@ -1,7 +1,6 @@
 use std::ops::Add;
 use std::cmp::{Ordering, Reverse};
 use std::fmt::{self, Display};
-use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -75,27 +74,27 @@ impl Default for DijkstraInfo {
     }
 }
 
+#[derive(Debug)]
 struct Router {
     node_index: NodeIndex,
     links: HashMap<Ipv4Network, Link>,
-    routes: RefCell<HashMap<Ipv4Network, Ipv4Addr>>,
 }
 impl Router {
-    pub fn new(node_index: NodeIndex, links: Vec<Link>) -> Router {
-        let mut map = HashMap::new();
-        for link in links {
-            // get a network whose ip is the lowest in the network for matching purposes
-            let net = Ipv4Network::new(link.network.network(), link.network.prefix()).unwrap();
-            map.insert(net, link);
-        }
-
+    pub fn new(node_index: NodeIndex) -> Router {
         Router {
             node_index,
-            links: map,
-            routes: RefCell::new(HashMap::new()),
+            links: HashMap::new(),
         }
     }
 
+    pub fn update_links(&mut self, links: Vec<Link>) {
+        self.links.clear();
+        for link in links {
+            // get a network whose ip is the lowest in the network for matching purposes
+            let net = Ipv4Network::new(link.network.network(), link.network.prefix()).unwrap();
+            self.links.insert(net, link);
+        }
+    }
     pub fn update_network(&self, networks: &mut HashMap<Ipv4Network, NodeIndex>, network: &mut Graph<Node, Link, petgraph::Undirected>) {
         for (net, link) in &self.links {
             if !networks.contains_key(net) {
@@ -105,10 +104,7 @@ impl Router {
             network.update_edge(self.node_index, networks[net], *link);
         }
     }
-    pub fn routes(&self) -> Ref<HashMap<Ipv4Network, Ipv4Addr>> {
-        self.routes.borrow()
-    }
-    pub fn update_routes(&self, networks: &HashMap<Ipv4Network, NodeIndex>, routers: &HashMap<SocketAddr, Router>, network: &Graph<Node, Link, petgraph::Undirected>) {
+    pub fn calculate_routes(&self, networks: &HashMap<Ipv4Network, NodeIndex>, routers: &HashMap<SocketAddr, Router>, network: &Graph<Node, Link, petgraph::Undirected>) -> HashMap<Ipv4Network, Ipv4Addr> {
         let mut infos = HashMap::new();
         let mut unvisited: PriorityQueue<_, Reverse<Cost>> = networks.values()
             .map(|i| (*i, Reverse(std::f64::INFINITY.into())))
@@ -143,6 +139,7 @@ impl Router {
             }
         }
 
+        let mut routes = HashMap::new();
         let networks: Vec<_> = infos.iter()
             .filter_map(|(index, info)| match info.prev {
                 None => None,
@@ -153,8 +150,6 @@ impl Router {
                 }
             })
             .collect();
-        let mut routes = self.routes.borrow_mut();
-        routes.clear();
         for (mut prev, net) in networks {
             let mut next_hop = None;
             while prev != self.node_index {
@@ -176,13 +171,30 @@ impl Router {
                 routes.insert(net, h);
             }
         }
+        routes
     }
 }
 
+pub trait RoutingTable {
+    fn find_route(&self, addr: Ipv4Addr) -> Option<(Ipv4Network, Ipv4Addr)>;
+}
+impl RoutingTable for HashMap<Ipv4Network, Ipv4Addr> {
+    fn find_route(&self, addr: Ipv4Addr) -> Option<(Ipv4Network, Ipv4Addr)> {
+        for (net, hop) in self {
+            if net.contains(addr) {
+                return Some((*net, *hop));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct Network {
     networks: HashMap<Ipv4Network, NodeIndex>,
     routers: HashMap<SocketAddr, Router>,
     network: Graph<Node, Link, petgraph::Undirected>,
+    routes: HashMap<SocketAddr, HashMap<Ipv4Network, Ipv4Addr>>,
 }
 impl Network {
     pub fn new() -> Network {
@@ -190,30 +202,28 @@ impl Network {
             networks: HashMap::new(),
             routers: HashMap::new(),
             network: Graph::new_undirected(),
+            routes: HashMap::new(),
         }
     }
 
-    pub fn add_router(&mut self, mgmt_addr: SocketAddr, links: Vec<Link>) -> bool {
-        if self.routers.contains_key(&mgmt_addr) {
-            return false;
+    pub fn update_router_links(&mut self, mgmt_addr: SocketAddr, links: Vec<Link>) {
+        if !self.routers.contains_key(&mgmt_addr) {
+            let new = Router::new(self.network.add_node(Node::Router(mgmt_addr)));
+            self.routers.insert(mgmt_addr, new);
         }
+        self.routers.get_mut(&mgmt_addr).unwrap().update_links(links);
 
-        let new = Router::new(self.network.add_node(Node::Router(mgmt_addr)), links);
-        self.routers.insert(mgmt_addr, new);
         for router in self.routers.values() {
             router.update_network(&mut self.networks, &mut self.network);
         }
-        for router in self.routers.values() {
-            router.update_routes(&self.networks, &self.routers, &self.network);
+        self.routes.clear();
+        for (mgmt_addr, router) in &self.routers {
+            let table = router.calculate_routes(&self.networks, &self.routers, &self.network);
+            self.routes.insert(*mgmt_addr, table);
         }
-
-        true
     }
-    pub fn routes(&self, mgmt_addr: SocketAddr) -> Option<Ref<HashMap<Ipv4Network, Ipv4Addr>>> {
-        match self.routers.get(&mgmt_addr) {
-            None => None,
-            Some(r) => Some(r.routes()),
-        }
+    pub fn routes(&self, mgmt_addr: SocketAddr) -> Option<&HashMap<Ipv4Network, Ipv4Addr>> {
+        self.routes.get(&mgmt_addr)
     }
 
     #[cfg(test)]
