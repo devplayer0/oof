@@ -104,9 +104,9 @@ function oof_dissect(buffer, pinfo, root, offset)
 			link_item:add(f_link_speed, speed_tvb, link_speed)
 		end
 	elseif p_type == 2 or p_type == 4 then
-		tree:add(f_destination, buffer(offset + 1), 4)
+		tree:add(f_destination, buffer(offset + 1, 4))
 	elseif p_type == 3 then
-		tree:add(f_next_hop, buffer(offset + 1), 4)
+		tree:add(f_next_hop, buffer(offset + 1, 4))
 	end
 
 	return msg_len
