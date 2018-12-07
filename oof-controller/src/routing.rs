@@ -12,7 +12,6 @@ use petgraph::graph::{NodeIndex, Graph};
 use oof_common::constants;
 use oof_common::net::Link;
 
-#[cfg(test)]
 use petgraph::dot::Dot;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -68,7 +67,7 @@ struct DijkstraInfo {
 impl Default for DijkstraInfo {
     fn default() -> DijkstraInfo {
         DijkstraInfo {
-            cost: std::f64::INFINITY.into(),
+            cost: std::f64::MAX.into(),
             prev: None,
         }
     }
@@ -107,12 +106,12 @@ impl Router {
     pub fn calculate_routes(&self, networks: &HashMap<Ipv4Network, NodeIndex>, routers: &HashMap<SocketAddr, Router>, network: &Graph<Node, Link, petgraph::Undirected>) -> HashMap<Ipv4Network, Ipv4Addr> {
         let mut infos = HashMap::new();
         let mut unvisited: PriorityQueue<_, Reverse<Cost>> = networks.values()
-            .map(|i| (*i, Reverse(std::f64::INFINITY.into())))
+            .map(|i| (*i, Reverse(std::f64::MAX.into())))
             .chain(
                 routers.values()
                 .map(|r| (r.node_index, match r.node_index {
                     i if i == self.node_index => Reverse(0f64.into()),
-                    _ => Reverse(std::f64::INFINITY.into()),
+                    _ => Reverse(std::f64::MAX.into()),
                 }))
             ).collect();
         for (i, _) in &unvisited {
@@ -199,6 +198,7 @@ impl Network {
             let table = router.calculate_routes(&self.networks, &self.routers, &self.network);
             self.routes.insert(*mgmt_addr, table);
         }
+        std::fs::write("/tmp/net.dot", format!("{}", self.as_dot())).expect("failed to write dot file");
     }
     pub fn update_router_links(&mut self, mgmt_addr: SocketAddr, links: Vec<Link>) {
         if !self.routers.contains_key(&mgmt_addr) {
@@ -231,7 +231,6 @@ impl Network {
         self.routes.get(&mgmt_addr)
     }
 
-    #[cfg(test)]
     pub fn as_dot(&self) -> Dot<&Graph<Node, Link, petgraph::Undirected>> {
         Dot::new(&self.network)
     }

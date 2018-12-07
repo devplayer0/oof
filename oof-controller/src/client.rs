@@ -45,8 +45,8 @@ impl ClientInner {
     }
 
     pub fn shutdown(&self) -> Result<()> {
-        self.stream.get_ref().shutdown(Shutdown::Both)?;
         self.network.write().unwrap().remove_router(self.addr);
+        self.stream.get_ref().shutdown(Shutdown::Both)?;
         Ok(())
     }
 
@@ -115,10 +115,13 @@ impl ClientInner {
 
                 let route = match self.network.read().unwrap().routes(self.addr) {
                     None => None,
-                    Some(r) => match r.find_route(dst) {
-                        None => None,
-                        Some(r) => Some(r),
-                    }
+                    Some(r) => {
+                        debug!("routing table for {}: {:#?}", self.addr, r);
+                        match r.find_route(dst) {
+                            None => None,
+                            Some(r) => Some(r),
+                        }
+                    },
                 };
                 match route {
                     Some((_, hop)) => self.send_route(hop)?,

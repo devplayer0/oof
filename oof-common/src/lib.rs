@@ -83,7 +83,7 @@ impl Display for MessageType {
         })
     }
 }
-pub fn read_message_type(stream: &mut BufStream<TcpStream>) -> Result<MessageType> {
+pub fn read_message_type<R: Read>(stream: &mut R) -> Result<MessageType> {
     let mut t = [0; 1];
     chk_disco!(stream.read(&mut t)?);
     let t = t[0];

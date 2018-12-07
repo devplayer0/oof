@@ -63,6 +63,17 @@ quick_error! {
             description("received router only message")
             display("received router only message of type {}", t)
         }
+        DefaultRoute {
+            description("failed to add default route")
+        }
+        Mtu(iface: String) {
+            display("failed to get mtu for interface: {}", iface)
+            description("failed to get mtu for interface")
+        }
+        PacketTooLarge(size: usize, mtu: u16) {
+            display("incoming packet bigger than mtu ({} > {})", size, mtu)
+            description("incoming packet bigger than mtu")
+        }
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;

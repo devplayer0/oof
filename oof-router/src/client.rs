@@ -167,10 +167,14 @@ impl Router {
         self.inner.lock().unwrap().update_links(links)
     }
     pub fn find_route(&self, dst: Ipv4Addr) -> Result<Route> {
-        match self.inner.lock().unwrap().find_route(dst) {
+        let mut inner = self.inner.lock().unwrap();
+        match inner.find_route(dst) {
             Err(e) => Err(e),
             Ok(Some(r)) => Ok(r),
-            Ok(None) => self.route_rx.recv().unwrap(),
+            Ok(None) => {
+                drop(inner);
+                self.route_rx.recv().unwrap()
+            },
         }
     }
     pub fn stop(self) {
