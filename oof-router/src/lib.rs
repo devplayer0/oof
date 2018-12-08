@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, TcpStream};
 use std::os::unix::io::AsRawFd;
 
 use quick_error::quick_error;
-use ipnetwork::IpNetworkError;
+use ipnetwork::{IpNetworkError, Ipv4Network};
 use nix::{libc, convert_ioctl_res, ioctl_read_bad};
 
 use oof_common as common;
@@ -36,12 +36,6 @@ quick_error! {
             description(err.description())
             cause(err)
         }
-        Tun(err: tun::Error) {
-            from()
-            display("tun error: {}", err)
-            description(err.description())
-            cause(err)
-        }
         Common(err: common::Error) {
             from()
             display("{}", err)
@@ -70,10 +64,11 @@ quick_error! {
             display("failed to get mtu for interface: {}", iface)
             description("failed to get mtu for interface")
         }
-        PacketTooLarge(size: usize, mtu: u16) {
+        PacketTooLarge(size: usize, mtu: u32) {
             display("incoming packet bigger than mtu ({} > {})", size, mtu)
             description("incoming packet bigger than mtu")
         }
+        DestinationReached(net: Ipv4Network) {}
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;

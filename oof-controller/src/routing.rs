@@ -143,7 +143,7 @@ impl Router {
             .filter_map(|(index, info)| match info.prev {
                 None => None,
                 Some(p) => match network[*index] {
-                    Node::Network(n) if self.links.contains_key(&n) => None,
+                    //Node::Network(n) if self.links.contains_key(&n) => None,
                     Node::Network(n) => Some((p, n)),
                     Node::Router(_) => None,
                 }
@@ -166,7 +166,10 @@ impl Router {
                 prev = infos[&prev].prev.unwrap();
             }
 
-            routes.insert(net, next_hop.unwrap());
+            match next_hop {
+                Some(h) => routes.insert(net, h),
+                None => routes.insert(net, self.links[&net].network.ip()),
+            };
         }
         routes
     }

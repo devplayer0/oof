@@ -1,32 +1,29 @@
 use std::ops::Deref;
-use std::collections::HashMap;
+use std::mem;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::io;
-use std::process::Command;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
-use std::os::unix::io::AsRawFd;
+use std::net::{Ipv4Addr, ToSocketAddrs};
 
 use log::{debug, warn, error};
 use ipnetwork::{IpNetwork, Ipv4Network};
-use bytes::{BufMut, BytesMut};
 use nix::poll::{EventFlags, PollFd, poll};
 use pnet::datalink::{self, MacAddr, NetworkInterface, DataLinkSender, DataLinkReceiver};
-use pnet::packet::{PacketSize, Packet};
-use pnet::packet::ipv4::{self, MutableIpv4Packet};
+use pnet::packet::{PacketSize, Packet, MutablePacket};
+use pnet::packet::ip::IpNextHeaderProtocols;
+use pnet::packet::ipv4::{self, Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::tcp::{self, MutableTcpPacket};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
-use tun;
 
-use oof_common::util::read_to_bytes_mut;
 use oof_common::net::{LinkSpeed, Link, Route};
 use crate::{Error, Result, client};
 
-const MAGIC_IP: &str = "1.2.3.4";
 const BROADCAST_MAC: MacAddr = MacAddr(0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
 
 pub fn iface_speed(iface: &str) -> Option<LinkSpeed> {
@@ -41,7 +38,7 @@ pub fn iface_speed(iface: &str) -> Option<LinkSpeed> {
         }
     }
 }
-pub fn iface_mtu(iface: &str) -> Option<u16> {
+pub fn iface_mtu(iface: &str) -> Option<u32> {
     match fs::read(format!("/sys/class/net/{}/mtu", iface)) {
         Err(_) => None,
         Ok(c) => match String::from_utf8(c) {
@@ -53,20 +50,11 @@ pub fn iface_mtu(iface: &str) -> Option<u16> {
         }
     }
 }
-fn add_default_route(via: &str) -> Result<()> {
-    let result = Command::new("ip")
-        .args(&[ "route", "add", "default", "via", via ])
-        .status()?;
-
-    match result.success() {
-        true => Ok(()),
-        false => Err(Error::DefaultRoute),
-    }
-}
 
 struct RawInterface {
     iface: NetworkInterface,
-    mtu: u16,
+    link: Link,
+    mtu: u32,
     tx: Box<DataLinkSender>,
     rx: Box<DataLinkReceiver>,
 }
@@ -77,17 +65,20 @@ impl Deref for RawInterface {
     }
 }
 impl RawInterface {
-    pub fn new(iface: NetworkInterface) -> Result<RawInterface> {
+    pub fn new(link: Link, iface: NetworkInterface) -> Result<RawInterface> {
+        let mtu = iface_mtu(&iface.name).ok_or(Error::Mtu(iface.name.clone()))?;
+
         let mut if_conf = datalink::Config::default();
-        if_conf.read_timeout = Some(Duration::from_secs(1));
+        if_conf.read_buffer_size = EthernetPacket::minimum_packet_size() + mtu as usize;
+        if_conf.read_timeout = Some(Duration::from_millis(0));
         let (tx, rx) = match datalink::channel(&iface, if_conf)? {
             datalink::Channel::Ethernet(tx, rx) => (tx, rx),
             _ => unreachable!(),
         };
 
-        let mtu = iface_mtu(&iface.name).ok_or(Error::Mtu(iface.name.clone()))?;
         Ok(RawInterface {
             iface,
+            link,
             mtu,
             tx,
             rx,
@@ -97,9 +88,9 @@ impl RawInterface {
 
 struct RawRouterInner {
     routes: client::Router,
-    tun: Box<tun::Device>,
-    tun_poll: PollFd,
     interfaces: HashMap<Ipv4Network, RawInterface>,
+    read_poll_fds: Vec<PollFd>,
+    packet_queue: Vec<(Ipv4Network, MutableEthernetPacket<'static>)>,
     arp_table: HashMap<Ipv4Addr, MacAddr>,
 }
 impl RawRouterInner {
@@ -115,33 +106,32 @@ impl RawRouterInner {
 
             let mut addr = None;
             for net in &iface.ips {
+                if net.contains(ctl_ip) {
+                    continue 'outer;
+                }
                 match net {
                     IpNetwork::V6(_) => continue,
-                    IpNetwork::V4(n) => match ctl_ip {
-                        IpAddr::V4(a) if n.contains(a) => continue 'outer,
-                        _ => addr = Some(*n),
-                    },
+                    IpNetwork::V4(n) => addr = Some(*n),
                 }
             }
 
             if let Some(a) = addr {
-                links.push(Link::new(a, iface_speed(&iface.name).unwrap_or(LinkSpeed::Gigabit)));
+                let link = Link::new(a, iface_speed(&iface.name).unwrap_or(LinkSpeed::Gigabit));
+                links.push(link);
                 arp_table.insert(a.ip(), iface.mac.expect("iface has no mac address??"));
-                interfaces.insert(a, iface);
+                interfaces.insert(a, (link, iface));
             }
         }
-
-        let tun_dev = tun::create(tun::Configuration::default()
-                                  .address(MAGIC_IP)
-                                  .netmask("255.255.255.255")
-                                  .up())?;
-        add_default_route(MAGIC_IP)?;
         routes.update_links(links)?;
 
-        let tun_poll = PollFd::new(tun_dev.as_raw_fd(), EventFlags::POLLIN);
+        let mut read_poll_fds = Vec::new();
         let interfaces = {
             match interfaces.into_iter()
-                .map(|(a, iface)| Ok((a, RawInterface::new(iface)?)))
+                .map(|(a, (link, iface))| {
+                    let iface = RawInterface::new(link, iface)?;
+                    read_poll_fds.push(PollFd::new(iface.rx.raw_fd(), EventFlags::POLLIN));
+                    Ok((a, iface))
+                })
                 .collect() {
                 Ok(i) => i,
                 Err(e) => return Err(e),
@@ -150,9 +140,9 @@ impl RawRouterInner {
 
         Ok(RawRouterInner {
             routes,
-            tun: Box::new(tun_dev),
-            tun_poll,
             interfaces,
+            read_poll_fds,
+            packet_queue: Vec::new(),
             arp_table,
         })
     }
@@ -187,13 +177,17 @@ impl RawRouterInner {
 
         let start = Instant::now();
         let target_mac = loop {
-            debug!("sending arp request");
-            if start.elapsed() >= Duration::from_secs(3) {
+            if start.elapsed() >= Duration::from_secs(2) {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "Timed out").into());
+            }
+            match poll(&mut [ PollFd::new(iface.rx.raw_fd(), EventFlags::POLLIN) ], 100) {
+                Ok(0) => continue,
+                _ => {},
             }
 
             let packet = EthernetPacket::new(iface.rx.next()?).unwrap();
             if packet.get_ethertype() != EtherTypes::Arp {
+                self.packet_queue.push((iface.link.network, MutableEthernetPacket::owned(packet.packet().to_owned()).unwrap()));
                 continue;
             }
 
@@ -203,6 +197,7 @@ impl RawRouterInner {
                 packet.get_target_hw_addr() != src_mac ||
                 packet.get_target_proto_addr() != src.ip() ||
                 packet.get_sender_proto_addr() != target {
+                self.packet_queue.push((iface.link.network, MutableEthernetPacket::owned(packet.packet().to_owned()).unwrap()));
                 continue;
             }
 
@@ -213,13 +208,164 @@ impl RawRouterInner {
         self.arp_table.insert(target, target_mac);
         Ok(target_mac)
     }
+    fn find_ether_peers(&mut self, ip_packet: Ipv4Packet) -> Result<(MacAddr, Ipv4Addr, MacAddr, &mut RawInterface)> {
+        let dst_ip = ip_packet.get_destination();
+        /*match self.arp_table.get(&dst_ip) {
+            Some(a) => Ok((*a, dst_ip, self.arp_table[&ip_packet.get_source()], self.interfaces.get_mut(&in_net).unwrap())),
+            None => {*/
+                // b: 10.0.0.2/16, 10.0.0.2 -> 10.0.0.2/16, 10.0.0.1
+                // a: 10.0.0.1/16, 10.0.0.1 -> 10.0.0.1/16, 10.0.0.1
+                let (net, mut hop) = self.routes.find_route(dst_ip)?;
+                if hop == dst_ip {
+                    return Err(Error::DestinationReached(net));
+                }
+
+                if net.ip() == hop {
+                    hop = dst_ip;
+                }
+
+                let dst_mac = self.arp_lookup((net, hop))?;
+                let mut src_mac = self.arp_table[&net.ip()];
+                
+                let src_iface = if dst_mac == src_mac {
+                    let loopback_net = "127.0.0.1/8".parse::<Ipv4Network>().unwrap();
+                    src_mac = self.arp_table[&loopback_net.ip()];
+                    self.interfaces.get_mut(&loopback_net).unwrap()
+                } else {
+                    self.interfaces.get_mut(&net).unwrap()
+                };
+                Ok((dst_mac, hop, src_mac, src_iface))
+            /*}
+        }*/
+    }
+    fn handle_packet(&mut self, in_net: Ipv4Network, mut ethernet: MutableEthernetPacket) -> Result<()> {
+        //let data_len = EthernetPacket::minimum_packet_size() + ethernet.payload().len();
+        match ethernet.get_ethertype() {
+            EtherTypes::Arp => {
+                let mut arp = match MutableArpPacket::new(ethernet.payload_mut()) {
+                    Some(p) => p,
+                    None => {
+                            warn!("received invalid arp packet on {} [mac: {}, dst mac: {}] from {}",
+                                  in_net, self.arp_table[&in_net.ip()], ethernet.get_destination(), ethernet.get_source());
+                            return Ok(());
+                    },
+                };
+
+                if arp.get_operation() != ArpOperations::Request ||
+                        arp.get_protocol_type() != EtherTypes::Ipv4 ||
+                        !in_net.contains(arp.get_sender_proto_addr()) ||
+                        arp.get_target_proto_addr() != in_net.ip() {
+                    debug!("ignoring arp request on {}", in_net);
+                    return Ok(());
+                }
+
+                let src_mac = arp.get_sender_hw_addr();
+                arp.set_operation(ArpOperations::Reply);
+                arp.set_sender_hw_addr(self.arp_table[&in_net.ip()]);
+                arp.set_target_hw_addr(src_mac);
+                arp.set_target_proto_addr(arp.get_sender_proto_addr());
+                arp.set_sender_proto_addr(in_net.ip());
+
+                ethernet.set_destination(ethernet.get_source());
+                ethernet.set_source(self.arp_table[&in_net.ip()]);
+
+                debug!("sending arp reply to {} (for {})", src_mac, in_net.ip());
+                self.interfaces.get_mut(&in_net).unwrap().tx.send_to(ethernet.packet(), None).unwrap()?;
+            },
+            EtherTypes::Ipv4 => {
+                let mut ip = match MutableIpv4Packet::new(ethernet.payload_mut()) {
+                    Some(p) => p,
+                    None => {
+                        warn!("received invalid ip packet on {} [mac: {}, dst mac: {}] from {}",
+                              in_net, self.arp_table[&in_net.ip()], ethernet.get_destination(), ethernet.get_source());
+                        return Ok(());
+                    },
+                };
+                let src_ip = ip.get_source();
+                let dst_ip = ip.get_destination();
+
+                if ip.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                    let mut tcp = MutableTcpPacket::new(ip.payload_mut()).expect("bad tcp packet");
+                    tcp.set_checksum(tcp::ipv4_checksum(&tcp.to_immutable(), &src_ip, &dst_ip));
+                }
+
+                ip.set_ttl(ip.get_ttl() - 1);
+                ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
+
+                if in_net.contains(dst_ip) {
+                    debug!("ignoring packet that should be handled by kernel");
+                    return Ok(());
+                }
+
+                let (out_net, mut hop) = self.routes.find_route(dst_ip)?;
+                if out_net.contains(dst_ip) {
+                    hop = dst_ip;
+                }
+
+                let dst_mac = self.arp_lookup((out_net, hop))?;
+                let src_mac = self.arp_table[&out_net.ip()];
+                ethernet.set_destination(dst_mac);
+                ethernet.set_source(src_mac);
+                
+                debug!("forwarding {} byte ethernet packet from {} to {} via {}", ethernet.payload().len(), src_ip, dst_ip, out_net);
+                self.interfaces.get_mut(&out_net).unwrap().tx.send_to(ethernet.packet(), None).unwrap()?;
+                /*let ((dst_mac, next_hop, src_mac, src_iface), dst_ip, payload_size) = {
+                    let ip_packet = match Ipv4Packet::new(ethernet.payload()) {
+                        Some(p) => p,
+                        None => {
+                            warn!("received invalid ip packet on {} [mac: {}, dst mac: {}] from {}",
+                                  in_net, self.arp_table[&in_net.ip()], ethernet.get_destination(), ethernet.get_source());
+                            return Ok(());
+                        },
+                    };
+
+                    let dst_ip = ip_packet.get_destination();
+                    let payload_len = ip_packet.payload().len();
+                    match self.find_ether_peers(ip_packet) {
+                        Ok(peers) => (peers, dst_ip, payload_len),
+                        Err(Error::DestinationReached(src_net)) => ((ethernet.get_destination(), dst_ip, ethernet.get_source(), self.interfaces.get_mut(&src_net).unwrap()), dst_ip, payload_len),
+                        Err(e) => {
+                            warn!("failed to find next ethernet peer: {}", e);
+                            return Ok(());
+                        },
+                    }
+                };
+
+                ethernet.set_destination(dst_mac);
+                ethernet.set_source(src_mac);
+                ethernet.set_ethertype(EtherTypes::Ipv4);
+
+                debug!("sending {} IP bytes to {} via {} ({}) from {} ({}))", payload_size, dst_ip, next_hop, dst_mac, &src_iface.name, src_mac);
+                src_iface.tx.send_to(ethernet.packet(), None).unwrap()?;*/
+            },
+            t => debug!("ignoring ethernet packet of type {}", t),
+        }
+        Ok(())
+    }
     pub fn read_and_process(&mut self) -> Result<()> {
-        match poll(&mut [self.tun_poll], 500) {
+        match poll(&mut self.read_poll_fds, 500) {
             Ok(0) => return Ok(()),
             _ => {},
         }
 
-        let mut data = read_to_bytes_mut(&mut self.tun, 65536)?;
+        if !self.packet_queue.is_empty() {
+            let mut queue = Vec::new();
+            mem::swap(&mut queue, &mut self.packet_queue);
+            for (iface_net, packet) in queue {
+                self.handle_packet(iface_net, packet)?;
+            }
+        }
+        for iface_net in self.interfaces.keys().map(|k| *k).collect::<Vec<_>>() {
+            let packet = match self.interfaces.get_mut(&iface_net).unwrap().rx.next() {
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
+                Err(e) => return Err(e.into()),
+                Ok(data) => {
+                    MutableEthernetPacket::owned(data.to_owned()).expect("received invalid ethernet packet")
+                },
+            };
+            self.handle_packet(iface_net, packet)?;
+        }
+        /*let mut data = read_to_bytes_mut(&mut self.tun, 65536)?;
         let payload_len = data.len();
         let mut ip_packet = MutableIpv4Packet::new(&mut data).expect("tun device provided invalid ip packet");
         let (next_src, next_hop) = match self.routes.find_route(ip_packet.get_destination()) {
@@ -250,7 +396,7 @@ impl RawRouterInner {
 
         let src_iface = self.interfaces.get_mut(&next_src).unwrap();
         debug!("sending {} bytes to {} via {} ({}) from {} ({} [{}]))", ip_packet.payload().len(), ip_packet.get_destination(), next_hop, dst_mac, &src_iface.name, next_src, src_mac);
-        src_iface.tx.send_to(&ethernet.packet()[..ethernet.packet_size() + data.len()], None).unwrap()?;
+        src_iface.tx.send_to(&ethernet.packet()[..ethernet.packet_size() + data.len()], None).unwrap()?;*/
         Ok(())
     }
     pub fn stop(self) {
