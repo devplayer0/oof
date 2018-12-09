@@ -70,6 +70,12 @@ class TestNet:
                 with node['db'].interfaces[net_name] as nc:
                     nc.up()
                     nc.add_ip(str(net['ip']))
+            if 'routes' in node:
+                for route, via in node['routes'].items():
+                    print('[{}] adding route {} via {}'.format(name, route, via))
+                    (node['db'].routes
+                        .add(dst=route, gateway=via)
+                        .commit())
 
     def next_ip(self, net):
         network = self.networks[net]

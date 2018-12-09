@@ -1,38 +1,44 @@
 ---
 networks:
-    ctl: "192.168.123.0/24"
-    cen: "10.0.0.0/16"
-    a: "10.1.0.0/24"
-    b: "10.2.0.0/24"
+    ctl: 192.168.123.0/24
+    cen: 10.0.0.0/16
+    a: 10.1.0.0/24
+    b: 10.2.0.0/24
 nodes:
     controller:
         networks:
             ctl:
-                ip: "192.168.123.1"
+                ip: 192.168.123.1
     router_a:
         networks:
             ctl:
-                ip: "192.168.123.2"
+                ip: 192.168.123.2
             cen:
-                ip: "10.0.0.1"
+                ip: 10.0.0.1
             a:
-                ip: "10.1.0.1"
+                ip: 10.1.0.1
     router_b:
         networks:
             ctl:
-                ip: "192.168.123.3"
+                ip: 192.168.123.3
             cen:
-                ip: "10.0.0.2"
+                ip: 10.0.0.2
             b:
-                ip: "10.2.0.1"
+                ip: 10.2.0.1
     server_1:
         networks:
             a:
-                ip: "10.1.0.254"
+                ip: 10.1.0.254
+        routes:
+            default: 10.1.0.1
     server_2:
         networks:
             b:
-                ip: "10.2.0.254"
+                ip: 10.2.0.254
+        routes:
+            default: 10.2.0.1
     client:
         networks:
             cen: {}
+        routes:
+            default: 10.0.0.1
