@@ -7,7 +7,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use ipnetwork::Ipv4Network;
 use priority_queue::PriorityQueue;
 use petgraph::visit::EdgeRef;
-use petgraph::graph::{NodeIndex, Graph};
+use petgraph::stable_graph::{NodeIndex, StableGraph};
 
 use oof_common::constants;
 use oof_common::net::Link;
@@ -94,7 +94,7 @@ impl Router {
             self.links.insert(net, link);
         }
     }
-    pub fn update_network(&self, networks: &mut HashMap<Ipv4Network, NodeIndex>, network: &mut Graph<Node, Link, petgraph::Undirected>) {
+    pub fn update_network(&self, networks: &mut HashMap<Ipv4Network, NodeIndex>, network: &mut StableGraph<Node, Link, petgraph::Undirected>) {
         for (net, link) in &self.links {
             if !networks.contains_key(net) {
                 let new = network.add_node(Node::Network(*net));
@@ -103,16 +103,16 @@ impl Router {
             network.update_edge(self.node_index, networks[net], *link);
         }
     }
-    pub fn calculate_routes(&self, networks: &HashMap<Ipv4Network, NodeIndex>, routers: &HashMap<SocketAddr, Router>, network: &Graph<Node, Link, petgraph::Undirected>) -> HashMap<Ipv4Network, Ipv4Addr> {
+    pub fn calculate_routes(&self, networks: &HashMap<Ipv4Network, NodeIndex>, routers: &HashMap<SocketAddr, Router>, network: &StableGraph<Node, Link, petgraph::Undirected>) -> HashMap<Ipv4Network, Ipv4Addr> {
         let mut infos = HashMap::new();
         let mut unvisited: PriorityQueue<_, Reverse<Cost>> = networks.values()
             .map(|i| (*i, Reverse(std::f64::MAX.into())))
             .chain(
                 routers.values()
-                .map(|r| (r.node_index, match r.node_index {
-                    i if i == self.node_index => Reverse(0f64.into()),
-                    _ => Reverse(std::f64::MAX.into()),
-                }))
+                .map(|r| (r.node_index, Reverse(match r.node_index {
+                    i if i == self.node_index => 0f64,
+                    _ => std::f64::MAX,
+                }.into())))
             ).collect();
         for (i, _) in &unvisited {
             let mut info = DijkstraInfo::default();
@@ -179,7 +179,7 @@ impl Router {
 pub(crate) struct Network {
     networks: HashMap<Ipv4Network, NodeIndex>,
     routers: HashMap<SocketAddr, Router>,
-    network: Graph<Node, Link, petgraph::Undirected>,
+    network: StableGraph<Node, Link, petgraph::Undirected>,
     routes: HashMap<SocketAddr, HashMap<Ipv4Network, Ipv4Addr>>,
 }
 impl Network {
@@ -187,7 +187,7 @@ impl Network {
         Network {
             networks: HashMap::new(),
             routers: HashMap::new(),
-            network: Graph::new_undirected(),
+            network: StableGraph::default(),
             routes: HashMap::new(),
         }
     }
@@ -214,7 +214,7 @@ impl Network {
     }
     pub fn remove_router(&mut self, mgmt_addr: SocketAddr) {
         if let Some(index) = self.routers.remove(&mgmt_addr) {
-            self.network.remove_node(index.node_index);
+            self.network.remove_node(index.node_index).unwrap();
 
             let mut to_remove = Vec::new();
             for (net, index) in &self.networks {
@@ -234,7 +234,7 @@ impl Network {
         self.routes.get(&mgmt_addr)
     }
 
-    pub fn as_dot(&self) -> Dot<&Graph<Node, Link, petgraph::Undirected>> {
+    pub fn as_dot(&self) -> Dot<&StableGraph<Node, Link, petgraph::Undirected>> {
         Dot::new(&self.network)
     }
 }
