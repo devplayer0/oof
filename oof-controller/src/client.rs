@@ -55,9 +55,11 @@ impl ClientInner {
         self.stream.flush()?;
         Ok(())
     }
-    fn send_route(&mut self, hop: Ipv4Addr) -> Result<()> {
-        let mut data = BytesMut::with_capacity(size_of::<u8>() + size_of::<u32>());
+    fn send_route(&mut self, net: Ipv4Network, hop: Ipv4Addr) -> Result<()> {
+        let mut data = BytesMut::with_capacity(size_of::<u8>() + size_of::<u32>() + size_of::<u8>() + size_of::<u32>());
         data.put(MessageType::Route as u8);
+        data.put_u32_be(net.network().into());
+        data.put(net.prefix());
         data.put_u32_be(hop.into());
 
         self.stream.write(&data.freeze())?;
@@ -116,7 +118,7 @@ impl ClientInner {
                 let route = match self.network.read().unwrap().routes(self.addr) {
                     None => None,
                     Some(r) => {
-                        debug!("routing table for {}: {:#?}", self.addr, r);
+                        debug!("received route request for {} from {}", dst, self.addr);
                         match r.find_route(dst) {
                             None => None,
                             Some(r) => Some(r),
@@ -124,7 +126,7 @@ impl ClientInner {
                     },
                 };
                 match route {
-                    Some((_, hop)) => self.send_route(hop)?,
+                    Some((net, hop)) => self.send_route(net, hop)?,
                     None => self.send_no_route(dst)?
                 }
             },

@@ -19,12 +19,12 @@ oof_proto = Proto("Oof", "Oof: OpenFlow")
 
 f_packet_type = ProtoField.uint8("oof.type", "Packet type", base.DEC, packet_types)
 f_link_count = ProtoField.uint16("oof.link_count", "Link count", base.DEC)
-f_link_ip = ProtoField.ipv4("oof.link_ip", "IP address")
-f_link_net_prefix = ProtoField.uint8("oof.link_net_preifx", "Network CIDR prefix", base.DEC)
+f_ip = ProtoField.ipv4("oof.link_ip", "IP address")
+f_net_prefix = ProtoField.uint8("oof.net_preifx", "Network CIDR prefix", base.DEC)
 f_link_speed = ProtoField.string("oof.link_speed", "Link speed", base.UNICODE)
 f_destination = ProtoField.ipv4("oof.destination", "Destination IP address")
 f_next_hop = ProtoField.ipv4("oof.next_hop", "Next hop")
-oof_proto.fields = { f_packet_type, f_link_count, f_link_ip, f_link_net_prefix, f_link_speed, f_destination, f_next_hop }
+oof_proto.fields = { f_packet_type, f_link_count, f_ip, f_net_prefix, f_link_speed, f_destination, f_next_hop }
 
 function oof_length(buffer, offset)
 	local msg_len = buffer:len() - offset
@@ -55,11 +55,16 @@ function oof_length(buffer, offset)
 			return -(required_len - msg_len)
 		end
 		real_len = required_len
-	elseif p_type == 2 or p_type == 3 or p_type == 4 then
+	elseif p_type == 2 or p_type == 4 then
 		if msg_len < 5 then
 			return -(5 - msg_len)
 		end
 		real_len = real_len + 4
+	elseif p_type == 3 then
+		if msg_len < 10 then
+			return -(10 - msg_len)
+		end
+		real_len = real_len + 9
 	else
 		return 0, p_type
 	end
@@ -98,15 +103,23 @@ function oof_dissect(buffer, pinfo, root, offset)
 			local link_str = tostring(ip_tvb:ipv4()) .. "/" .. tostring(prefix_tvb:uint()) .. " @ " .. link_speed
 			local link_item = tree:add(tree, buffer(offset, 6))
 			link_item:set_text("Link: " .. link_str)
-			link_item:add(f_link_ip, ip_tvb)
-			link_item:add(f_link_net_prefix, prefix_tvb)
+			link_item:add(f_ip, ip_tvb)
+			link_item:add(f_net_prefix, prefix_tvb)
 
 			link_item:add(f_link_speed, speed_tvb, link_speed)
 		end
 	elseif p_type == 2 or p_type == 4 then
 		tree:add(f_destination, buffer(offset + 1, 4))
 	elseif p_type == 3 then
-		tree:add(f_next_hop, buffer(offset + 1, 4))
+		local net_item = tree:add(tree, buffer(offset, 10))
+		local ip_tvb = buffer(offset + 1, 4)
+		local prefix_tvb = buffer(offset + 5, 1)
+
+		net_item:set_text("Network: " .. tostring(ip_tvb:ipv4()) .. "/" .. tostring(prefix_tvb:uint()))
+		net_item:add(f_ip, ip_tvb)
+		net_item:add(f_net_prefix, prefix_tvb)
+
+		tree:add(f_next_hop, buffer(offset + 6, 4))
 	end
 
 	return msg_len

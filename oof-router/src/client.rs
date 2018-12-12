@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, SyncSender, Receiver};
 use std::thread::{self, JoinHandle};
@@ -7,7 +7,7 @@ use std::io::Write;
 use std::net::{Ipv4Addr, ToSocketAddrs, SocketAddr, Shutdown, TcpStream};
 use std::os::unix::io::AsRawFd;
 
-use log::error;
+use log::{debug, error};
 use bufstream::BufStream;
 use bytes::{IntoBuf, Buf, BufMut, BytesMut};
 use ipnetwork::{IpNetworkError, Ipv4Network};
@@ -24,6 +24,7 @@ struct RouterInner {
     stream: BufStream<TcpStream>,
     links: Vec<Link>,
     routes: HashMap<Ipv4Network, Ipv4Addr>,
+    unroutable: HashSet<Ipv4Addr>,
     route_tx: SyncSender<Result<Route>>,
 }
 impl RouterInner {
@@ -37,6 +38,7 @@ impl RouterInner {
             stream,
             links: Vec::new(),
             routes: HashMap::new(),
+            unroutable: HashSet::new(),
             route_tx,
         }, route_rx))
     }
@@ -58,9 +60,22 @@ impl RouterInner {
         self.links = links;
         Ok(())
     }
+    fn find_src_link(&self, dst: Ipv4Addr) -> Option<Ipv4Network> {
+        for link in &self.links {
+            if link.network.contains(dst) {
+                return Some(link.network)
+            }
+        }
+
+        None
+    }
     pub fn find_route(&mut self, dst: Ipv4Addr) -> Result<Option<Route>> {
+        if self.unroutable.contains(&dst) {
+            return Err(Error::NoRoute(dst));
+        }
+
         match self.routes.find_route(dst) {
-            Some(r) => Ok(Some(r)),
+            Some((_, hop)) => Ok(Some((self.find_src_link(hop).unwrap(), hop))),
             None => {
                 let mut data = BytesMut::with_capacity(size_of::<u8>() + size_of::<u32>());
                 data.put(MessageType::RouteRequest as u8);
@@ -77,24 +92,29 @@ impl RouterInner {
         match common::read_message_type(&mut self.stream) {
             Ok(Hello) => return Err(common::Error::HelloAlready.into()),
             Ok(Route) => {
-                let mut data = read_to_bytes(&mut self.stream, size_of::<u32>())?.into_buf();
+                let mut data = read_to_bytes(&mut self.stream, size_of::<u32>() + size_of::<u8>() + size_of::<u32>())?.into_buf();
+                let net = Ipv4Network::new(data.get_u32_be().into(), data.get_u8()).unwrap();
                 let hop = Ipv4Addr::from(data.get_u32_be());
 
-                for link in &self.links {
-                    if link.network.contains(hop) {
-                        self.routes.insert(link.network, hop);
-                        self.route_tx.send(Ok((link.network, hop))).unwrap();
-                        return Ok(());
-                    }
+                match self.find_src_link(hop) {
+                    Some(src_net) => {
+                        self.routes.insert(net, hop);
+                        self.route_tx.send(Ok((src_net, hop))).unwrap();
+                    },
+                    None => return Err(Error::InvalidRoute(IpNetworkError::InvalidAddr(hop.to_string()))),
                 }
-                return Err(Error::InvalidRoute(IpNetworkError::InvalidAddr(hop.to_string())));
             },
             Ok(NoRoute) => {
                 let mut data = read_to_bytes(&mut self.stream, size_of::<u32>())?.into_buf();
                 let addr = Ipv4Addr::from(data.get_u32_be());
+                self.unroutable.insert(addr);
                 self.route_tx.send(Err(Error::NoRoute(addr))).unwrap();
             },
-            Ok(InvalidateRoutes) => self.routes.clear(),
+            Ok(InvalidateRoutes) => {
+                debug!("controller requested cached routing table invalidation");
+                self.routes.clear();
+                self.unroutable.clear();
+            },
             Ok(t) => return Err(Error::RouterOnly(t)),
             Err(e) => return Err(e.into()),
         }
