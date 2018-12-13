@@ -9,8 +9,9 @@ use std::io;
 use std::fs;
 use std::net::{Ipv4Addr, ToSocketAddrs};
 
-use log::{debug, warn, error};
+use log::{trace, debug, warn, error};
 use ipnetwork::{IpNetwork, Ipv4Network};
+use nix::libc;
 use nix::poll::{EventFlags, PollFd, poll};
 use pnet::datalink::{self, MacAddr, NetworkInterface, DataLinkSender, DataLinkReceiver};
 use pnet::packet::{PacketSize, Packet, MutablePacket};
@@ -18,7 +19,7 @@ use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::icmp::{self, IcmpTypes, IcmpPacket};
+use pnet::packet::icmp::{self, IcmpTypes, IcmpCode, IcmpPacket};
 use pnet::packet::icmp::time_exceeded::{self, TimeExceededPacket, MutableTimeExceededPacket};
 use pnet::packet::icmp::destination_unreachable::{self, DestinationUnreachablePacket, MutableDestinationUnreachablePacket};
 use pnet::packet::icmp::echo_request::EchoRequestPacket;
@@ -60,6 +61,7 @@ pub fn iface_mtu(iface: &str) -> Option<u32> {
 struct RawInterface {
     iface: NetworkInterface,
     link: Link,
+    mtu: u32,
     tx: Box<DataLinkSender>,
     rx: Box<DataLinkReceiver>,
 }
@@ -74,7 +76,8 @@ impl RawInterface {
         let mtu = iface_mtu(&iface.name).ok_or(Error::Mtu(iface.name.clone()))?;
 
         let mut if_conf = datalink::Config::default();
-        if_conf.read_buffer_size = EthernetPacket::minimum_packet_size() + mtu as usize;
+        if_conf.read_buffer_size = std::u16::MAX as usize;
+        if_conf.write_buffer_size = std::u16::MAX as usize;
         if_conf.read_timeout = Some(Duration::from_millis(0));
         let (tx, rx) = match datalink::channel(&iface, if_conf)? {
             datalink::Channel::Ethernet(tx, rx) => (tx, rx),
@@ -84,6 +87,7 @@ impl RawInterface {
         Ok(RawInterface {
             iface,
             link,
+            mtu,
             tx,
             rx,
         })
@@ -223,7 +227,7 @@ impl RawRouterInner {
         ip.set_dscp(0);
         ip.set_ecn(0);
         ip.set_total_length(ip.packet().len() as u16);
-        ip.set_identification(0);
+        ip.set_identification(123);
         ip.set_flags(Ipv4Flags::DontFragment);
         ip.set_ttl(DEFAULT_TTL);
         ip.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
@@ -256,13 +260,16 @@ impl RawRouterInner {
 
         self.send_icmp(orig.get_source(), IcmpPacket::new(ttl.packet()).unwrap())
     }
-    fn send_net_unreachable(&mut self, orig: Ipv4Packet) -> Result<()> {
+    fn send_icmp_unreachable(&mut self, orig: Ipv4Packet, code: IcmpCode, mtu: u32) -> Result<()> {
         let orig_ip_slice = &orig.packet()[..(orig.get_header_length() as usize * 4) + 8];
         let mut unreachable = MutableDestinationUnreachablePacket::owned(vec![0;
                                                                          DestinationUnreachablePacket::minimum_packet_size() +
                                                                          orig_ip_slice.len()]).unwrap();
+        if code == destination_unreachable::IcmpCodes::FragmentationRequiredAndDFFlagSet {
+            unreachable.set_unused(mtu as u16 as u32);
+        }
         unreachable.set_icmp_type(IcmpTypes::DestinationUnreachable);
-        unreachable.set_icmp_code(destination_unreachable::IcmpCodes::DestinationNetworkUnknown);
+        unreachable.set_icmp_code(code);
         unreachable.set_payload(&orig.packet()[..orig_ip_slice.len()]);
         unreachable.set_checksum(icmp::checksum(&IcmpPacket::new(unreachable.packet()).unwrap()));
 
@@ -337,8 +344,6 @@ impl RawRouterInner {
                     return Ok(());
                 }
 
-                ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
-
                 if in_net.contains(dst_ip) {
                     if dst_ip == in_net.ip() {
                         match ip.get_next_level_protocol() {
@@ -366,7 +371,7 @@ impl RawRouterInner {
                     Ok(r) => r,
                     Err(Error::NoRoute(_)) => {
                         warn!("controller has no route to {}, sending icmp network unknown to {}", dst_ip, src_ip);
-                        self.send_net_unreachable(ip.to_immutable())?;
+                        self.send_icmp_unreachable(ip.to_immutable(), destination_unreachable::IcmpCodes::DestinationNetworkUnknown, 0)?;
                         return Ok(());
                     },
                     Err(e) => return Err(e),
@@ -386,14 +391,24 @@ impl RawRouterInner {
                     },
                     _ => {},
                 }
+                ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
 
                 let dst_mac = self.arp_lookup(out_net, hop)?;
                 let src_mac = self.arp_table[&out_net.ip()];
                 ethernet.set_destination(dst_mac);
                 ethernet.set_source(src_mac);
                 
-                debug!("forwarding {} byte ethernet packet from {} to {} via {}", ethernet.payload().len(), src_ip, dst_ip, out_net);
-                self.interfaces.get_mut(&out_net).unwrap().tx.send_to(ethernet.packet(), None).unwrap()?;
+                trace!("forwarding {} byte ethernet packet from {} to {} via {}", ethernet.payload().len(), src_ip, dst_ip, out_net);
+                let iface = self.interfaces.get_mut(&out_net).unwrap();
+                let mtu = iface.mtu;
+                match iface.tx.send_to(ethernet.packet(), None).unwrap() {
+                    Ok(()) => {},
+                    Err(ref e) if e.kind() == io::ErrorKind::Other && e.raw_os_error().unwrap() == libc::EMSGSIZE => {
+                        warn!("packet from {} larger than mtu, sending icmp fragmentation required message", src_ip);
+                        self.send_icmp_unreachable(Ipv4Packet::new(ethernet.payload()).unwrap(), destination_unreachable::IcmpCodes::FragmentationRequiredAndDFFlagSet, mtu)?;
+                    },
+                    Err(e) => return Err(e.into()),
+                }
             },
             t => debug!("ignoring ethernet packet of type {}", t),
         }
@@ -413,9 +428,7 @@ impl RawRouterInner {
             let packet = match self.interfaces.get_mut(&iface_net).unwrap().rx.next() {
                 Err(ref e) if e.kind() == io::ErrorKind::TimedOut => continue,
                 Err(e) => return Err(e.into()),
-                Ok(data) => {
-                    MutableEthernetPacket::owned(data.to_owned()).expect("received invalid ethernet packet")
-                },
+                Ok(data) => MutableEthernetPacket::owned(data.to_owned()).expect("received invalid ethernet packet"),
             };
 
             self.handle_packet(iface_net, packet)?;
