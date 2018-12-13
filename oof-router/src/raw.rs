@@ -19,6 +19,7 @@ use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPa
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::icmp::{self, IcmpTypes, IcmpPacket};
+use pnet::packet::icmp::time_exceeded::{self, TimeExceededPacket, MutableTimeExceededPacket};
 use pnet::packet::icmp::destination_unreachable::{self, DestinationUnreachablePacket, MutableDestinationUnreachablePacket};
 use pnet::packet::tcp::{self, MutableTcpPacket};
 use pnet::packet::udp::{self, MutableUdpPacket};
@@ -27,6 +28,7 @@ use oof_common::net::{LinkSpeed, Link};
 use crate::{Error, Result, client};
 
 const BROADCAST_MAC: MacAddr = MacAddr(0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+const DEFAULT_TTL: u8 = 64;
 
 pub fn iface_speed(iface: &str) -> Option<LinkSpeed> {
     match fs::read(format!("/sys/class/net/{}/speed", iface)) {
@@ -203,9 +205,56 @@ impl RawRouterInner {
         self.arp_table.insert(target, target_mac);
         Ok(target_mac)
     }
-    fn send_net_unreachable(&mut self, src_link: Ipv4Network, orig: Ipv4Packet) -> Result<()> {
-        assert!(src_link.contains(orig.get_source()));
+    fn send_icmp(&mut self, dst: Ipv4Addr, icmp: IcmpPacket) -> Result<()> {
+        let (out_net, mut hop) = self.routes.find_route(dst)?;
+        if out_net.contains(dst) {
+            hop = dst;
+        }
+        let dst_mac = self.arp_lookup(out_net, hop)?;
+        let src_mac = self.arp_table[&out_net.ip()];
 
+        let mut ip = MutableIpv4Packet::owned(vec![0;
+                                              Ipv4Packet::minimum_packet_size() +
+                                              icmp.packet().len()]).unwrap();
+        ip.set_version(4);
+        ip.set_header_length(20 / 4);
+        ip.set_dscp(0);
+        ip.set_ecn(0);
+        ip.set_total_length(ip.packet().len() as u16);
+        ip.set_identification(0);
+        ip.set_flags(Ipv4Flags::DontFragment);
+        ip.set_ttl(DEFAULT_TTL);
+        ip.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
+        ip.set_source(out_net.ip());
+        ip.set_destination(dst);
+        ip.set_payload(icmp.packet());
+        ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
+
+        let mut ethernet = MutableEthernetPacket::owned(vec![0;
+                                                        EthernetPacket::minimum_packet_size() +
+                                                        ip.packet().len()]).unwrap();
+        ethernet.set_destination(dst_mac);
+        ethernet.set_source(src_mac);
+        ethernet.set_ethertype(EtherTypes::Ipv4);
+        ethernet.set_payload(ip.packet());
+
+        let iface = self.interfaces.get_mut(&out_net).unwrap();
+        iface.tx.send_to(ethernet.packet(), None).unwrap()?;
+        Ok(())
+    }
+    fn send_time_exceeded(&mut self, orig: Ipv4Packet) -> Result<()> {
+        let orig_ip_slice = &orig.packet()[..(orig.get_header_length() as usize * 4) + 8];
+        let mut ttl = MutableTimeExceededPacket::owned(vec![0;
+                                                       TimeExceededPacket::minimum_packet_size() +
+                                                       orig_ip_slice.len()]).unwrap();
+        ttl.set_icmp_type(IcmpTypes::TimeExceeded);
+        ttl.set_icmp_code(time_exceeded::IcmpCodes::TimeToLiveExceededInTransit);
+        ttl.set_payload(&orig.packet()[..orig_ip_slice.len()]);
+        ttl.set_checksum(icmp::checksum(&IcmpPacket::new(ttl.packet()).unwrap()));
+
+        self.send_icmp(orig.get_source(), IcmpPacket::new(ttl.packet()).unwrap())
+    }
+    fn send_net_unreachable(&mut self, orig: Ipv4Packet) -> Result<()> {
         let orig_ip_slice = &orig.packet()[..(orig.get_header_length() as usize * 4) + 8];
         let mut unreachable = MutableDestinationUnreachablePacket::owned(vec![0;
                                                                          DestinationUnreachablePacket::minimum_packet_size() +
@@ -215,36 +264,7 @@ impl RawRouterInner {
         unreachable.set_payload(&orig.packet()[..orig_ip_slice.len()]);
         unreachable.set_checksum(icmp::checksum(&IcmpPacket::new(unreachable.packet()).unwrap()));
 
-        let mut ip = MutableIpv4Packet::owned(vec![0;
-                                              Ipv4Packet::minimum_packet_size() +
-                                              unreachable.packet().len()]).unwrap();
-        ip.set_version(4);
-        ip.set_header_length(20 / 4);
-        ip.set_dscp(0);
-        ip.set_ecn(0);
-        ip.set_total_length(ip.packet().len() as u16);
-        ip.set_identification(0);
-        ip.set_flags(Ipv4Flags::DontFragment);
-        ip.set_ttl(64);
-        ip.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
-        ip.set_source(src_link.ip());
-        ip.set_destination(orig.get_source());
-        ip.set_payload(unreachable.packet());
-        ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
-
-        let dst_mac = self.arp_lookup(src_link, orig.get_source())?;
-        let src_mac = self.arp_table[&src_link.ip()];
-        let mut ethernet = MutableEthernetPacket::owned(vec![0;
-                                                        EthernetPacket::minimum_packet_size() +
-                                                        ip.packet().len()]).unwrap();
-        ethernet.set_destination(dst_mac);
-        ethernet.set_source(src_mac);
-        ethernet.set_ethertype(EtherTypes::Ipv4);
-        ethernet.set_payload(ip.packet());
-
-        let iface = self.interfaces.get_mut(&src_link).unwrap();
-        iface.tx.send_to(ethernet.packet(), None).unwrap()?;
-        Ok(())
+        self.send_icmp(orig.get_source(), IcmpPacket::new(unreachable.packet()).unwrap())
     }
     fn handle_packet(&mut self, in_net: Ipv4Network, mut ethernet: MutableEthernetPacket) -> Result<()> {
         match ethernet.get_ethertype() {
@@ -300,7 +320,17 @@ impl RawRouterInner {
                     udp.set_checksum(udp::ipv4_checksum(&udp.to_immutable(), &src_ip, &dst_ip));
                 }
 
+                if ip.get_ttl() == 0 {
+                    warn!("ignoring ipv4 packet with ttl = 0");
+                    return Ok(());
+                }
                 ip.set_ttl(ip.get_ttl() - 1);
+                if ip.get_ttl() == 0 {
+                    warn!("ttl reached 0, sending time exceeded to {}", ip.get_source());
+                    self.send_time_exceeded(ip.to_immutable())?;
+                    return Ok(());
+                }
+
                 ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
 
                 if in_net.contains(dst_ip) {
@@ -311,8 +341,8 @@ impl RawRouterInner {
                 let (out_net, mut hop) = match self.routes.find_route(dst_ip) {
                     Ok(r) => r,
                     Err(Error::NoRoute(_)) => {
-                        warn!("controller has no route to {}, sending icmp network unreachable to {}", dst_ip, src_ip);
-                        self.send_net_unreachable(in_net, ip.to_immutable())?;
+                        warn!("controller has no route to {}, sending icmp network unknown to {}", dst_ip, src_ip);
+                        self.send_net_unreachable(ip.to_immutable())?;
                         return Ok(());
                     },
                     Err(e) => return Err(e),
