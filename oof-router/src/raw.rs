@@ -357,8 +357,8 @@ impl RawRouterInner {
                     return Ok(());
                 }
 
-                if in_net.contains(dst_ip) {
-                    if dst_ip == in_net.ip() {
+                for link in self.interfaces.keys() {
+                    if dst_ip == link.ip() {
                         match ip.get_next_level_protocol() {
                             IpNextHeaderProtocols::Icmp => {
                                 let icmp = IcmpPacket::new(ip.payload()).expect("received invalid icmp packet");
@@ -375,7 +375,8 @@ impl RawRouterInner {
                         }
                         return Ok(());
                     }
-
+                }
+                if in_net.contains(dst_ip) {
                     warn!("received packet destined for on-link route, not my job lol");
                     return Ok(());
                 }
