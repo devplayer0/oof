@@ -1,9 +1,8 @@
 use std::ops::Deref;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicBool};
-use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::process::{Stdio, Command};
 use std::io;
@@ -25,7 +24,10 @@ use pnet::packet::icmp::time_exceeded::{self, TimeExceededPacket, MutableTimeExc
 use pnet::packet::icmp::destination_unreachable::{self, DestinationUnreachablePacket, MutableDestinationUnreachablePacket};
 use pnet::packet::icmp::echo_request::EchoRequestPacket;
 use pnet::packet::icmp::echo_reply::{self, EchoReplyPacket, MutableEchoReplyPacket};
+
+#[cfg(feature = "tcp_udp_checksum")]
 use pnet::packet::tcp::{self, MutableTcpPacket};
+#[cfg(feature = "tcp_udp_checksum")]
 use pnet::packet::udp::{self, MutableUdpPacket};
 
 use oof_common::net::{LinkSpeed, Link};
@@ -115,13 +117,15 @@ struct RawRouterInner {
     arp_table: HashMap<Ipv4Addr, MacAddr>,
 }
 impl RawRouterInner {
-    pub fn new(routes: client::Router) -> Result<RawRouterInner> {
+    pub fn new<'a, I: IntoIterator<Item = &'a str>>(routes: client::Router, ignored_interfaces: I) -> Result<RawRouterInner> {
+        let ignored_interfaces: HashSet<_> = ignored_interfaces.into_iter().collect();
+
         let ctl_ip = routes.addr().ip();
         let mut links = Vec::new();
         let mut interfaces = HashMap::new();
         let mut arp_table = HashMap::new();
         'outer: for iface in datalink::interfaces() {
-            if !iface.is_up() || iface.is_loopback() {
+            if ignored_interfaces.contains(&iface.name[..]) || !iface.is_up() || iface.is_loopback() {
                 continue;
             }
 
@@ -461,27 +465,14 @@ pub struct RawRouter {
     thread: JoinHandle<()>,
 }
 impl RawRouter {
-    pub fn start<A: ToSocketAddrs, E: Fn(Error) + Send + 'static>(addr: A, err_handler: E) -> Result<RawRouter> {
+    pub fn start<'a, A: ToSocketAddrs, I: IntoIterator<Item = &'a str> + Send + Sync, E: Fn(Error) + Send + 'static>(addr: A, ignored_interfaces: I, err_handler: E) -> Result<RawRouter> {
         let routes = client::Router::connect(addr, err_handler)?;
 
-        let (tx, rx) = mpsc::sync_channel::<Result<()>>(0);
         let running = Arc::new(AtomicBool::new(true));
+        let mut inner = RawRouterInner::new(routes, ignored_interfaces)?;
         let thread = {
             let running = Arc::clone(&running);
             thread::spawn(move || {
-                let mut inner = match (|| {
-                    Ok(RawRouterInner::new(routes)?)
-                })() {
-                    Ok(inner) => {
-                        tx.send(Ok(())).unwrap();
-                        inner
-                    },
-                    Err(e) => {
-                        tx.send(Err(e)).unwrap();
-                        return;
-                    },
-                };
-
                 while running.load(Ordering::SeqCst) {
                     match inner.read_and_process() {
                         Ok(()) => {},
@@ -492,7 +483,6 @@ impl RawRouter {
             })
         };
 
-        rx.recv().unwrap()?;
         Ok(RawRouter {
             running,
             thread,

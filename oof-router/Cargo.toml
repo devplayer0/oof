@@ -14,6 +14,7 @@ bufstream = "~0.1"
 pnet = { path = "../../../libpnet" }
 simplelog = "~0.5"
 ctrlc = { version = "~3.1", features = [ "termination" ] }
+clap = "~2.32"
 oof-common = { path = "../oof-common" }
 
 [features]

@@ -16,4 +16,5 @@ ipnetwork = "~0.13"
 nix = "~0.12"
 simplelog = "~0.5"
 ctrlc = { version = "~3.1", features = [ "termination" ] }
+clap = "~2.32"
 oof-common = { path = "../oof-common" }
