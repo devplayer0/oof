@@ -21,6 +21,8 @@ use pnet::packet::ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::icmp::{self, IcmpTypes, IcmpPacket};
 use pnet::packet::icmp::time_exceeded::{self, TimeExceededPacket, MutableTimeExceededPacket};
 use pnet::packet::icmp::destination_unreachable::{self, DestinationUnreachablePacket, MutableDestinationUnreachablePacket};
+use pnet::packet::icmp::echo_request::EchoRequestPacket;
+use pnet::packet::icmp::echo_reply::{self, EchoReplyPacket, MutableEchoReplyPacket};
 use pnet::packet::tcp::{self, MutableTcpPacket};
 use pnet::packet::udp::{self, MutableUdpPacket};
 
@@ -266,6 +268,19 @@ impl RawRouterInner {
 
         self.send_icmp(orig.get_source(), IcmpPacket::new(unreachable.packet()).unwrap())
     }
+    fn send_ping_reply(&mut self, dst: Ipv4Addr, request: EchoRequestPacket) -> Result<()> {
+        let mut reply = MutableEchoReplyPacket::owned(vec![0;
+                                                EchoReplyPacket::minimum_packet_size() +
+                                                request.payload().len()]).unwrap();
+        reply.set_icmp_type(IcmpTypes::EchoReply);
+        reply.set_icmp_code(echo_reply::IcmpCodes::NoCode);
+        reply.set_identifier(request.get_identifier());
+        reply.set_sequence_number(request.get_sequence_number());
+        reply.set_payload(request.payload());
+        reply.set_checksum(icmp::checksum(&IcmpPacket::new(reply.packet()).unwrap()));
+
+        self.send_icmp(dst, IcmpPacket::new(reply.packet()).unwrap())
+    }
     fn handle_packet(&mut self, in_net: Ipv4Network, mut ethernet: MutableEthernetPacket) -> Result<()> {
         match ethernet.get_ethertype() {
             EtherTypes::Arp => {
@@ -311,15 +326,6 @@ impl RawRouterInner {
                 let src_ip = ip.get_source();
                 let dst_ip = ip.get_destination();
 
-                if ip.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
-                    let mut tcp = MutableTcpPacket::new(ip.payload_mut()).expect("bad tcp packet");
-                    tcp.set_checksum(tcp::ipv4_checksum(&tcp.to_immutable(), &src_ip, &dst_ip));
-                }
-                if ip.get_next_level_protocol() == IpNextHeaderProtocols::Udp {
-                    let mut udp = MutableUdpPacket::new(ip.payload_mut()).expect("bad tcp packet");
-                    udp.set_checksum(udp::ipv4_checksum(&udp.to_immutable(), &src_ip, &dst_ip));
-                }
-
                 if ip.get_ttl() == 0 {
                     warn!("ignoring ipv4 packet with ttl = 0");
                     return Ok(());
@@ -334,7 +340,25 @@ impl RawRouterInner {
                 ip.set_checksum(ipv4::checksum(&ip.to_immutable()));
 
                 if in_net.contains(dst_ip) {
-                    debug!("ignoring packet that should be handled by kernel");
+                    if dst_ip == in_net.ip() {
+                        match ip.get_next_level_protocol() {
+                            IpNextHeaderProtocols::Icmp => {
+                                let icmp = IcmpPacket::new(ip.payload()).expect("received invalid icmp packet");
+                                match icmp.get_icmp_type() {
+                                    IcmpTypes::EchoRequest => {
+                                        let request = EchoRequestPacket::new(ip.payload()).expect("received invalid echo request");
+                                        debug!("sending icmp echo reply to {} (seq {})", src_ip, request.get_sequence_number());
+                                        self.send_ping_reply(src_ip, request)?
+                                    },
+                                    _ => warn!("received icmp packet destined for this router that we can't handle"),
+                                }
+                            },
+                            _ => warn!("received packet destined for this router that we can't handle"),
+                        }
+                        return Ok(());
+                    }
+
+                    warn!("received packet destined for on-link route, not my job lol");
                     return Ok(());
                 }
 
@@ -349,6 +373,18 @@ impl RawRouterInner {
                 };
                 if out_net.contains(dst_ip) {
                     hop = dst_ip;
+                }
+
+                match ip.get_next_level_protocol() {
+                    IpNextHeaderProtocols::Tcp => {
+                        let mut tcp = MutableTcpPacket::new(ip.payload_mut()).expect("bad tcp packet");
+                        tcp.set_checksum(tcp::ipv4_checksum(&tcp.to_immutable(), &src_ip, &dst_ip));
+                    },
+                    IpNextHeaderProtocols::Udp => {
+                        let mut udp = MutableUdpPacket::new(ip.payload_mut()).expect("bad tcp packet");
+                        udp.set_checksum(udp::ipv4_checksum(&udp.to_immutable(), &src_ip, &dst_ip));
+                    },
+                    _ => {},
                 }
 
                 let dst_mac = self.arp_lookup(out_net, hop)?;
