@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
+use std::process::{Stdio, Command};
 use std::io;
 use std::fs;
 use std::net::{Ipv4Addr, ToSocketAddrs};
@@ -57,6 +58,16 @@ pub fn iface_mtu(iface: &str) -> Option<u32> {
         }
     }
 }
+pub fn del_route(route: &str) -> Result<()> {
+    Command::new("/usr/bin/ip")
+        .args(&[ "route", "del", route ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    Ok(())
+}
 
 struct RawInterface {
     iface: NetworkInterface,
@@ -73,6 +84,8 @@ impl Deref for RawInterface {
 }
 impl RawInterface {
     pub fn new(link: Link, iface: NetworkInterface) -> Result<RawInterface> {
+        del_route(&Ipv4Network::new(link.network.network(), link.network.prefix()).unwrap().to_string())?;
+
         let mtu = iface_mtu(&iface.name).ok_or(Error::Mtu(iface.name.clone()))?;
 
         let mut if_conf = datalink::Config::default();
