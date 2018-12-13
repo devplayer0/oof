@@ -394,13 +394,14 @@ impl RawRouterInner {
                     hop = dst_ip;
                 }
 
+                #[cfg(feature = "tcp_udp_checksum")]
                 match ip.get_next_level_protocol() {
                     IpNextHeaderProtocols::Tcp => {
                         let mut tcp = MutableTcpPacket::new(ip.payload_mut()).expect("bad tcp packet");
                         tcp.set_checksum(tcp::ipv4_checksum(&tcp.to_immutable(), &src_ip, &dst_ip));
                     },
                     IpNextHeaderProtocols::Udp => {
-                        let mut udp = MutableUdpPacket::new(ip.payload_mut()).expect("bad tcp packet");
+                        let mut udp = MutableUdpPacket::new(ip.payload_mut()).expect("bad udp packet");
                         udp.set_checksum(udp::ipv4_checksum(&udp.to_immutable(), &src_ip, &dst_ip));
                     },
                     _ => {},
