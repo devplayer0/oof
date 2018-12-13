@@ -62,6 +62,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Controller {
     running: Arc<AtomicBool>,
     clients: Arc<RwLock<HashMap<SocketAddr, Client>>>,
+    network: Arc<RwLock<Network>>,
     thread: JoinHandle<()>,
 }
 impl Controller {
@@ -73,10 +74,11 @@ impl Controller {
 
         let running = Arc::new(AtomicBool::new(true));
         let clients = Arc::new(RwLock::new(HashMap::new()));
+        let network = Arc::new(RwLock::new(Network::new()));
         let thread = {
             let running = Arc::clone(&running);
             let clients = Arc::clone(&clients);
-            let network = Arc::new(RwLock::new(Network::new()));
+            let network = Arc::clone(&network);
             thread::spawn(move || {
                 while running.load(Ordering::SeqCst) {
                     match listener.accept() {
@@ -96,10 +98,14 @@ impl Controller {
         Ok(Controller {
             running,
             clients,
+            network,
             thread,
         })
     }
 
+    pub fn net_as_dot(&self) -> String {
+        format!("{}", self.network.read().unwrap().as_dot())
+    }
     pub fn stop(self) {
         self.running.store(false, Ordering::SeqCst);
         self.thread.join().expect("io thread panicked");

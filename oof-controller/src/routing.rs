@@ -201,7 +201,6 @@ impl Network {
             let table = router.calculate_routes(&self.networks, &self.routers, &self.network);
             self.routes.insert(*mgmt_addr, table);
         }
-        std::fs::write("/tmp/net.dot", format!("{}", self.as_dot())).expect("failed to write dot file");
     }
     pub fn update_router_links(&mut self, mgmt_addr: SocketAddr, links: Vec<Link>) {
         if !self.routers.contains_key(&mgmt_addr) {
