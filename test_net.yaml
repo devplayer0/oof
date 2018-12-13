@@ -6,10 +6,12 @@ networks:
     b: 10.2.0.0/24
 nodes:
     controller:
+        is_controller: true
         networks:
             ctl:
                 ip: 192.168.123.1
     router_a:
+        is_router: true
         networks:
             ctl:
                 ip: 192.168.123.2
@@ -18,6 +20,7 @@ nodes:
             a:
                 ip: 10.1.0.1
     router_b:
+        is_router: true
         networks:
             ctl:
                 ip: 192.168.123.3
