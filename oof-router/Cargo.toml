@@ -11,7 +11,7 @@ nix = "~0.12"
 ipnetwork = "~0.13"
 bytes = "~0.4"
 bufstream = "~0.1"
-pnet = { path = "../../../libpnet" }
+pnet = { git = "https://github.com/devplayer0/libpnet" }
 simplelog = "~0.5"
 ctrlc = { version = "~3.1", features = [ "termination" ] }
 clap = "~2.32"
