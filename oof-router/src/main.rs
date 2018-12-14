@@ -22,7 +22,10 @@ impl<'a> From<clap::ArgMatches<'a>> for Config {
             log_level: util::verbosity_to_log_level(args.occurrences_of("verbose") as usize),
 
             address: args.value_of("address").unwrap().to_owned(),
-            ignored_interfaces: args.values_of("ignored_interfaces").unwrap().map(|i| i.to_owned()).collect(),
+            ignored_interfaces: match args.values_of("ignored_interfaces") {
+                Some(ifaces) => ifaces.map(|i| i.to_owned()).collect(),
+                None => Vec::new(),
+            },
         }
     }
 }
