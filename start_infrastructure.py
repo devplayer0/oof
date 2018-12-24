@@ -89,10 +89,11 @@ def main():
     try:
         for name in controllers:
             threads.append(start_node(name, True))
-        time.sleep(1)
+        time.sleep(2)
 
         for name in routers:
             threads.append(start_node(name, False))
+            time.sleep(1)
     except Exception as ex:
         for thread in reversed(threads):
             thread.stop()
@@ -104,7 +105,7 @@ def main():
     for thread in reversed(threads):
         try:
             thread.stop()
-            time.sleep(0.5)
+            time.sleep(1)
         except Exception as ex:
             print(ex)
 
