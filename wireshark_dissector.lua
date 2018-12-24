@@ -87,6 +87,7 @@ function oof_dissect(buffer, pinfo, root, offset)
 	end
 
 	tree:add(f_packet_type, buffer(offset, 1))
+	pinfo.cols.info:set("["..packet_types[p_type].."]")
 	if p_type == 1 then
 		local link_count_tvb = buffer(offset + 1, 2)
 		tree:add(f_link_count, link_count_tvb)
@@ -107,19 +108,25 @@ function oof_dissect(buffer, pinfo, root, offset)
 			link_item:add(f_net_prefix, prefix_tvb)
 
 			link_item:add(f_link_speed, speed_tvb, link_speed)
+			pinfo.cols.info:append(", "..link_str)
 		end
 	elseif p_type == 2 or p_type == 4 then
-		tree:add(f_destination, buffer(offset + 1, 4))
+		local ip_tvb = buffer(offset + 1, 4)
+		tree:add(f_destination, ip_tvb)
+		pinfo.cols.info:append(" to "..tostring(ip_tvb:ipv4()))
 	elseif p_type == 3 then
 		local net_item = tree:add(tree, buffer(offset, 10))
 		local ip_tvb = buffer(offset + 1, 4)
 		local prefix_tvb = buffer(offset + 5, 1)
 
-		net_item:set_text("Network: " .. tostring(ip_tvb:ipv4()) .. "/" .. tostring(prefix_tvb:uint()))
+		local net_str = tostring(ip_tvb:ipv4()) .. "/" .. tostring(prefix_tvb:uint())
+		net_item:set_text("Network: "..net_str)
 		net_item:add(f_ip, ip_tvb)
 		net_item:add(f_net_prefix, prefix_tvb)
 
-		tree:add(f_next_hop, buffer(offset + 6, 4))
+		local hop_tvb = buffer(offset + 6, 4)
+		tree:add(f_next_hop, hop_tvb)
+		pinfo.cols.info:append(" to "..net_str.." via "..tostring(hop_tvb:ipv4()))
 	end
 
 	return msg_len
