@@ -43,7 +43,7 @@ class ColoredProcessPipe(Thread):
             self.proc.wait(timeout=5)
 
 def get_cargo_path(executable):
-    return os.path.join(os.path.dirname(sys.argv[0]), 'target', 'debug', executable)
+    return os.path.join(path, executable)
 
 def start_node(name, is_controller):
     if is_controller:
@@ -62,10 +62,14 @@ def start_node(name, is_controller):
 def main():
     parser = argparse.ArgumentParser(description='start oof routing infrastructure (controller and routers)')
     parser.add_argument('configuration', help='YAML file containing networks and network nodes')
+    parser.add_argument('-e', '--executables-path', dest='path', help='directory containing controller / router executables', default=os.path.join(os.path.dirname(sys.argv[0]), 'target', 'release'))
 
     args = parser.parse_args()
     with open(args.configuration) as conf_file:
         config = yaml.load(conf_file)
+
+    global path
+    path = args.path
 
     controllers = []
     routers = []
@@ -100,6 +104,7 @@ def main():
     for thread in reversed(threads):
         try:
             thread.stop()
+            time.sleep(0.5)
         except Exception as ex:
             print(ex)
 
