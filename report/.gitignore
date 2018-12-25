@@ -1,0 +1,6 @@
+report.*
+test_net.*
+_minted-report/
+!report.tex
+!test_net.dot
+!test_net.tex
